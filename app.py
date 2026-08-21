@@ -5,6 +5,7 @@ import re
 import random
 import string
 import io
+import plotly.express as px
 
 # ======================
 # Page Config
@@ -17,26 +18,25 @@ st.set_page_config(
 
 # ======================
 # Approximate Exchange Rates (to USD as base)
-# Update these rates for production use
 # ======================
 RATES_TO_USD = {
     "USD": 1.0,
-    "HKD": 0.1282,      # ~7.80 HKD = 1 USD
-    "SGD": 0.755,       # ~1.32 SGD = 1 USD
+    "HKD": 0.1282,
+    "SGD": 0.755,
     "CNY": 0.138,
     "EUR": 1.08,
     "GBP": 1.27,
     "JPY": 0.0067,
     "AUD": 0.65,
     "CAD": 0.73,
-    "INR": 0.012,       # ~83.3 INR = 1 USD
-    "KRW": 0.00073,     # ~1370 KRW = 1 USD
+    "INR": 0.012,
+    "KRW": 0.00073,
 }
 
 SUPPORTED_TARGET = ["HKD", "SGD", "USD"]
 
 # ======================
-# Standard Categories (for reference)
+# Standard Categories
 # ======================
 RECEIPT_CATEGORIES = [
     "AR Receipt",
@@ -102,7 +102,6 @@ def convert_amount(amount, from_currency, to_currency):
     return round(amount_usd / rate_to, 2)
 
 def find_column(df_columns, possible_names):
-    """Case-insensitive + space-insensitive column finder."""
     lower_map = {str(c).strip().lower().replace(" ", ""): c for c in df_columns}
     for name in possible_names:
         key = name.lower().replace(" ", "")
@@ -112,31 +111,18 @@ def find_column(df_columns, possible_names):
 
 def process_dataframe(df: pd.DataFrame, target_currency: str):
     warnings = []
-
-    # Clean completely empty rows
     df = df.dropna(how="all").copy()
 
-    # Column mapping – includes your exact column names
     col_map = {
-        "company": [
-            "entity", "company", "company name", "comp", "entity name"
-        ],
+        "company": ["entity", "company", "company name", "comp", "entity name"],
         "party": [
             "organization", "party name", "party", "customer name", "customer",
             "payee name", "payee", "vendor", "supplier", "organisation"
         ],
-        "currency": [
-            "currency", "curr", "ccy", "fx"
-        ],
-        "amount": [
-            "amount", "amt", "value", "transaction amount"
-        ],
-        "payment_date": [
-            "payment date", "date", "txn date", "transaction date", "pay date"
-        ],
-        "category": [
-            "category", "categories", "type", "transaction type", "class"
-        ],
+        "currency": ["currency", "curr", "ccy", "fx"],
+        "amount": ["amount", "amt", "value", "transaction amount"],
+        "payment_date": ["payment date", "date", "txn date", "transaction date", "pay date"],
+        "category": ["category", "categories", "type", "transaction type", "class"],
     }
 
     found = {}
@@ -152,7 +138,6 @@ def process_dataframe(df: pd.DataFrame, target_currency: str):
     if missing_required:
         return None, [f"Missing required column(s): {', '.join(missing_required)}"]
 
-    # Build result
     result = pd.DataFrame()
     result["Company"] = df[found["company"]].astype(str).str.strip() if "company" in found else ""
     result["Party Name"] = df[found["party"]].astype(str).str.strip() if "party" in found else ""
@@ -167,17 +152,14 @@ def process_dataframe(df: pd.DataFrame, target_currency: str):
         if "category" in found else ""
     )
 
-    # Remove rows where Amount is completely missing
     result = result.dropna(subset=["Amount"]).reset_index(drop=True)
 
-    # Convert
     converted_col = f"Amount (in {target_currency})"
     result[converted_col] = result.apply(
         lambda row: convert_amount(row["Amount"], row["Currency"], target_currency),
         axis=1
     )
 
-    # Unsupported currencies warning
     unsupported = result[
         result[converted_col].isna() & result["Amount"].notna()
     ]["Currency"].unique()
@@ -186,7 +168,6 @@ def process_dataframe(df: pd.DataFrame, target_currency: str):
             f"Unsupported currencies (left blank): {', '.join(map(str, unsupported))}"
         )
 
-    # Non-standard categories warning (optional)
     non_standard = result[
         ~result["Category"].isin(ALL_STANDARD_CATEGORIES)
         & (result["Category"] != "")
@@ -200,7 +181,6 @@ def process_dataframe(df: pd.DataFrame, target_currency: str):
             + ("..." if len(unique_non_std) > 10 else "")
         )
 
-    # Final column order
     cols = ["Company", "Party Name", "Currency", "Amount", converted_col, "Payment Date", "Category"]
     result = result[cols]
 
@@ -297,10 +277,9 @@ st.markdown(f"Welcome, **{st.session_state.user_email}**!")
 
 st.markdown("""
 Upload your cashflow Excel / CSV (like `mycashflow.xlsx`).  
-The app will standardize columns and convert all amounts into **HKD / SGD / USD**.
+The app will standardize columns, convert amounts, and show **payments by payee each month**.
 """)
 
-# Category reference
 with st.expander("📋 Recommended Categories (click to expand)", expanded=False):
     col_r, col_p = st.columns(2)
     with col_r:
@@ -312,7 +291,6 @@ with st.expander("📋 Recommended Categories (click to expand)", expanded=False
         for cat in PAYMENT_CATEGORIES:
             st.markdown(f"- {cat}")
 
-# Upload
 uploaded_file = st.file_uploader(
     "Upload Excel or CSV file",
     type=["xlsx", "xls", "csv"],
@@ -324,9 +302,8 @@ if uploaded_file is not None:
         if uploaded_file.name.lower().endswith(".csv"):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            df_raw = pd.read_excel(uploaded_file)
+            df_raw = pd.read_excel(uploaded_file, engine="openpyxl")
 
-        # Remove completely empty rows early
         df_raw = df_raw.dropna(how="all")
 
         st.success(f"✅ File loaded: **{uploaded_file.name}** ({len(df_raw)} rows)")
@@ -340,7 +317,7 @@ if uploaded_file is not None:
         target_currency = st.selectbox(
             "Convert all amounts to:",
             options=SUPPORTED_TARGET,
-            index=0,  # default HKD
+            index=0,
             help="All original amounts will be converted into this currency."
         )
 
@@ -362,54 +339,168 @@ if uploaded_file is not None:
 
                 st.success(f"✅ Conversion completed! {len(result_df)} valid transactions processed.")
 
-                st.subheader("2️⃣ Processed Data")
-                st.dataframe(result_df, use_container_width=True)
+                # Store in session so chart stays after interaction
+                st.session_state.result_df = result_df
+                st.session_state.target_currency = target_currency
+                st.session_state.converted_col = f"Amount (in {target_currency})"
 
-                # Summary metrics
-                converted_col = f"Amount (in {target_currency})"
-                total_converted = result_df[converted_col].sum()
+        # ===== Show results if already processed =====
+        if "result_df" in st.session_state:
+            result_df = st.session_state.result_df
+            target_currency = st.session_state.target_currency
+            converted_col = st.session_state.converted_col
 
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Total Rows", len(result_df))
-                col2.metric("Sum of original Amount", f"{result_df['Amount'].sum():,.2f}")
-                col3.metric(f"Sum in {target_currency}", f"{total_converted:,.2f}")
+            st.subheader("2️⃣ Processed Data")
+            st.dataframe(result_df, use_container_width=True)
 
-                # Category breakdown
-                st.markdown("#### Category Summary")
-                cat_summary = (
-                    result_df.groupby("Category", dropna=False)
-                    .agg(
-                        Count=("Amount", "count"),
-                        Original_Sum=("Amount", "sum"),
-                        Converted_Sum=(converted_col, "sum"),
+            # Metrics
+            total_converted = result_df[converted_col].sum()
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Rows", len(result_df))
+            col2.metric("Sum of original Amount", f"{result_df['Amount'].sum():,.2f}")
+            col3.metric(f"Sum in {target_currency}", f"{total_converted:,.2f}")
+
+            # Category Summary
+            st.markdown("#### Category Summary")
+            cat_summary = (
+                result_df.groupby("Category", dropna=False)
+                .agg(
+                    Count=("Amount", "count"),
+                    Original_Sum=("Amount", "sum"),
+                    Converted_Sum=(converted_col, "sum"),
+                )
+                .reset_index()
+                .sort_values("Converted_Sum", ascending=False)
+            )
+            st.dataframe(cat_summary, use_container_width=True)
+
+            # ==============================
+            # 3️⃣ Graph: Payments by Payee each Month
+            # ==============================
+            st.markdown("---")
+            st.subheader("3️⃣ Payments by Payee each Month")
+
+            # Prepare data for chart
+            chart_df = result_df.copy()
+            chart_df = chart_df.dropna(subset=["Payment Date", converted_col])
+            chart_df["Month"] = chart_df["Payment Date"].dt.to_period("M").astype(str)
+
+            # Filters
+            col_f1, col_f2, col_f3 = st.columns(3)
+
+            with col_f1:
+                view_mode = st.selectbox(
+                    "Show amounts",
+                    options=["All amounts", "Payments only (negative)", "Receipts only (positive)"],
+                    index=0
+                )
+
+            with col_f2:
+                top_n = st.slider("Top N payees (by absolute amount)", min_value=5, max_value=30, value=10)
+
+            with col_f3:
+                chart_type = st.selectbox("Chart type", options=["Stacked Bar", "Grouped Bar", "Line"], index=0)
+
+            # Filter by sign
+            if view_mode == "Payments only (negative)":
+                chart_df = chart_df[chart_df[converted_col] < 0]
+            elif view_mode == "Receipts only (positive)":
+                chart_df = chart_df[chart_df[converted_col] > 0]
+
+            if chart_df.empty:
+                st.warning("No data available for the selected filter.")
+            else:
+                # Find top N payees by absolute total
+                payee_totals = (
+                    chart_df.groupby("Party Name")[converted_col]
+                    .apply(lambda x: x.abs().sum())
+                    .sort_values(ascending=False)
+                )
+                top_payees = payee_totals.head(top_n).index.tolist()
+
+                chart_df = chart_df[chart_df["Party Name"].isin(top_payees)]
+
+                # Aggregate
+                monthly = (
+                    chart_df.groupby(["Month", "Party Name"], as_index=False)[converted_col]
+                    .sum()
+                )
+
+                # Plot
+                if chart_type == "Stacked Bar":
+                    fig = px.bar(
+                        monthly,
+                        x="Month",
+                        y=converted_col,
+                        color="Party Name",
+                        title=f"Monthly Amount by Payee ({target_currency}) – Top {top_n}",
+                        barmode="stack",
+                        labels={converted_col: f"Amount ({target_currency})"},
+                        height=550
                     )
-                    .reset_index()
-                    .sort_values("Converted_Sum", ascending=False)
+                elif chart_type == "Grouped Bar":
+                    fig = px.bar(
+                        monthly,
+                        x="Month",
+                        y=converted_col,
+                        color="Party Name",
+                        title=f"Monthly Amount by Payee ({target_currency}) – Top {top_n}",
+                        barmode="group",
+                        labels={converted_col: f"Amount ({target_currency})"},
+                        height=550
+                    )
+                else:  # Line
+                    fig = px.line(
+                        monthly,
+                        x="Month",
+                        y=converted_col,
+                        color="Party Name",
+                        title=f"Monthly Amount by Payee ({target_currency}) – Top {top_n}",
+                        markers=True,
+                        labels={converted_col: f"Amount ({target_currency})"},
+                        height=550
+                    )
+
+                fig.update_layout(
+                    xaxis_title="Month",
+                    yaxis_title=f"Amount ({target_currency})",
+                    legend_title="Payee",
+                    hovermode="x unified"
                 )
-                st.dataframe(cat_summary, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
-                # Download
-                st.markdown("---")
-                st.subheader("3️⃣ Download Result")
+                # Optional: show the monthly table
+                with st.expander("View monthly data table"):
+                    pivot = monthly.pivot(index="Month", columns="Party Name", values=converted_col).fillna(0)
+                    st.dataframe(pivot.style.format("{:,.2f}"), use_container_width=True)
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                default_name = f"cashflow_converted_{target_currency}_{timestamp}.xlsx"
+            # Download
+            st.markdown("---")
+            st.subheader("4️⃣ Download Result")
 
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    result_df.to_excel(writer, index=False, sheet_name="Converted")
-                    cat_summary.to_excel(writer, index=False, sheet_name="Category Summary")
-                output.seek(0)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_name = f"cashflow_converted_{target_currency}_{timestamp}.xlsx"
 
-                st.download_button(
-                    label="📥 Download Converted Excel",
-                    data=output,
-                    file_name=default_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    type="primary",
-                )
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                result_df.to_excel(writer, index=False, sheet_name="Converted")
+                cat_summary.to_excel(writer, index=False, sheet_name="Category Summary")
+            output.seek(0)
 
+            st.download_button(
+                label="📥 Download Converted Excel",
+                data=output,
+                file_name=default_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary",
+            )
+
+    except ImportError:
+        st.error(
+            "Missing package **openpyxl**. "
+            "Please add `openpyxl>=3.1.0` to your `requirements.txt` and redeploy."
+        )
     except Exception as e:
         st.error(f"Error reading file: {e}")
         st.exception(e)
@@ -417,12 +508,11 @@ if uploaded_file is not None:
 else:
     st.info("👆 Please upload your cashflow Excel or CSV file to begin.")
 
-# Footer
 st.markdown("---")
 st.caption("""
 **Notes**  
 • Amount: **positive** = receipt / inflow, **negative** = payment / outflow  
-• Your file columns (`entity`, `Organization`, `currency`, `amount`, `Payment Date`, `Category`) are fully supported  
-• Empty rows are automatically skipped  
+• Graph shows Top N payees by absolute amount, grouped by month  
+• You can switch between All / Payments only / Receipts only  
 • Exchange rates are approximate — update `RATES_TO_USD` for production accuracy  
 """)
