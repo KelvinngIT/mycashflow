@@ -375,7 +375,7 @@ if uploaded_file is not None:
             st.dataframe(cat_summary, use_container_width=True)
 
             # ==============================
-            # 3️⃣ Graph: Payments by Payee – Year & Period Filter
+            # 3️⃣ Graph: Payments by Payee – Year & Period Filter + Select Payees
             # ==============================
             st.markdown("---")
             st.subheader("3️⃣ Payments by Payee – Year & Period Filter")
@@ -393,7 +393,7 @@ if uploaded_file is not None:
                 # ---------- Filters ----------
                 available_years = sorted(chart_df["Year"].dropna().unique().astype(int).tolist())
 
-                col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+                col_f1, col_f2, col_f3 = st.columns(3)
 
                 with col_f1:
                     selected_years = st.multiselect(
@@ -417,106 +417,134 @@ if uploaded_file is not None:
                         index=0
                     )
 
-                with col_f4:
-                    top_n = st.slider("Top N payees", min_value=5, max_value=30, value=10)
-
-                # Apply year filter
+                # Apply year + sign filters first
                 if not selected_years:
                     st.warning("Please select at least one year.")
                 else:
-                    chart_df = chart_df[chart_df["Year"].isin(selected_years)]
+                    filtered_df = chart_df[chart_df["Year"].isin(selected_years)].copy()
 
-                    # Apply sign filter
                     if view_mode == "Payments only (negative)":
-                        chart_df = chart_df[chart_df[converted_col] < 0]
+                        filtered_df = filtered_df[filtered_df[converted_col] < 0]
                     elif view_mode == "Receipts only (positive)":
-                        chart_df = chart_df[chart_df[converted_col] > 0]
+                        filtered_df = filtered_df[filtered_df[converted_col] > 0]
 
-                    if chart_df.empty:
+                    if filtered_df.empty:
                         st.warning("No data available for the selected filters.")
                     else:
-                        # Period column
-                        if period_type == "Monthly":
-                            period_col = "Month"
-                        else:
-                            period_col = "Quarter"
-
-                        # Top N payees by absolute amount
+                        # ----- Payee selection -----
+                        # Sort payees by absolute total amount (largest first)
                         payee_totals = (
-                            chart_df.groupby("Party Name")[converted_col]
+                            filtered_df.groupby("Party Name")[converted_col]
                             .apply(lambda x: x.abs().sum())
                             .sort_values(ascending=False)
                         )
-                        top_payees = payee_totals.head(top_n).index.tolist()
-                        chart_df = chart_df[chart_df["Party Name"].isin(top_payees)]
+                        all_payees = payee_totals.index.tolist()
 
-                        # Aggregate
-                        monthly = (
-                            chart_df.groupby([period_col, "Party Name"], as_index=False)[converted_col]
-                            .sum()
-                        )
+                        st.markdown("#### Select Payees")
+                        col_p1, col_p2 = st.columns([3, 1])
 
-                        # Chart type selector
-                        chart_type = st.radio(
-                            "Chart type",
-                            options=["Stacked Bar", "Grouped Bar", "Line"],
-                            horizontal=True,
-                            index=0
-                        )
-
-                        # Build chart
-                        title = f"{period_type} Amount by Payee ({target_currency}) – Years: {', '.join(map(str, selected_years))} – Top {top_n}"
-
-                        if chart_type == "Stacked Bar":
-                            fig = px.bar(
-                                monthly,
-                                x=period_col,
-                                y=converted_col,
-                                color="Party Name",
-                                title=title,
-                                barmode="stack",
-                                labels={converted_col: f"Amount ({target_currency})"},
-                                height=550
+                        with col_p1:
+                            selected_payees = st.multiselect(
+                                "Choose payees to display (you can select / deselect freely)",
+                                options=all_payees,
+                                default=all_payees[:10],   # default top 10
+                                help="Deselect any payee you don't want to see in the chart"
                             )
-                        elif chart_type == "Grouped Bar":
-                            fig = px.bar(
-                                monthly,
-                                x=period_col,
-                                y=converted_col,
-                                color="Party Name",
-                                title=title,
-                                barmode="group",
-                                labels={converted_col: f"Amount ({target_currency})"},
-                                height=550
-                            )
+
+                        with col_p2:
+                            st.write("")  # spacing
+                            st.write("")
+                            if st.button("Select All", use_container_width=True):
+                                st.session_state.force_payees = all_payees
+                                st.rerun()
+                            if st.button("Clear All", use_container_width=True):
+                                st.session_state.force_payees = []
+                                st.rerun()
+
+                        # Override selection if buttons were clicked
+                        if "force_payees" in st.session_state:
+                            selected_payees = st.session_state.force_payees
+                            # Clear the force flag after using it once
+                            del st.session_state.force_payees
+
+                        if not selected_payees:
+                            st.warning("Please select at least one payee.")
                         else:
-                            fig = px.line(
-                                monthly,
-                                x=period_col,
-                                y=converted_col,
-                                color="Party Name",
-                                title=title,
-                                markers=True,
-                                labels={converted_col: f"Amount ({target_currency})"},
-                                height=550
+                            chart_data = filtered_df[filtered_df["Party Name"].isin(selected_payees)]
+
+                            # Period column
+                            period_col = "Month" if period_type == "Monthly" else "Quarter"
+
+                            # Aggregate
+                            monthly = (
+                                chart_data.groupby([period_col, "Party Name"], as_index=False)[converted_col]
+                                .sum()
                             )
 
-                        fig.update_layout(
-                            xaxis_title=period_type,
-                            yaxis_title=f"Amount ({target_currency})",
-                            legend_title="Payee",
-                            hovermode="x unified"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                            # Chart type
+                            chart_type = st.radio(
+                                "Chart type",
+                                options=["Stacked Bar", "Grouped Bar", "Line"],
+                                horizontal=True,
+                                index=0
+                            )
 
-                        # Data table
-                        with st.expander("View period data table"):
-                            pivot = monthly.pivot(
-                                index=period_col,
-                                columns="Party Name",
-                                values=converted_col
-                            ).fillna(0)
-                            st.dataframe(pivot.style.format("{:,.2f}"), use_container_width=True)
+                            title = (
+                                f"{period_type} Amount by Payee ({target_currency}) – "
+                                f"Years: {', '.join(map(str, selected_years))} – "
+                                f"{len(selected_payees)} payees"
+                            )
+
+                            if chart_type == "Stacked Bar":
+                                fig = px.bar(
+                                    monthly,
+                                    x=period_col,
+                                    y=converted_col,
+                                    color="Party Name",
+                                    title=title,
+                                    barmode="stack",
+                                    labels={converted_col: f"Amount ({target_currency})"},
+                                    height=550
+                                )
+                            elif chart_type == "Grouped Bar":
+                                fig = px.bar(
+                                    monthly,
+                                    x=period_col,
+                                    y=converted_col,
+                                    color="Party Name",
+                                    title=title,
+                                    barmode="group",
+                                    labels={converted_col: f"Amount ({target_currency})"},
+                                    height=550
+                                )
+                            else:
+                                fig = px.line(
+                                    monthly,
+                                    x=period_col,
+                                    y=converted_col,
+                                    color="Party Name",
+                                    title=title,
+                                    markers=True,
+                                    labels={converted_col: f"Amount ({target_currency})"},
+                                    height=550
+                                )
+
+                            fig.update_layout(
+                                xaxis_title=period_type,
+                                yaxis_title=f"Amount ({target_currency})",
+                                legend_title="Payee",
+                                hovermode="x unified"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                            # Data table
+                            with st.expander("View period data table"):
+                                pivot = monthly.pivot(
+                                    index=period_col,
+                                    columns="Party Name",
+                                    values=converted_col
+                                ).fillna(0)
+                                st.dataframe(pivot.style.format("{:,.2f}"), use_container_width=True)
 
             # ==============================
             # 4️⃣ Download
@@ -559,7 +587,8 @@ st.markdown("---")
 st.caption("""
 **Notes**  
 • Amount: **positive** = receipt / inflow, **negative** = payment / outflow  
-• Graph shows Top N payees by absolute amount, grouped by month or quarter  
-• You can filter by Year(s), Period type, and Amount sign  
+• You can freely select / deselect any payees using the multi-select box  
+• Use "Select All" or "Clear All" buttons for convenience  
+• Graph supports Year filter + Monthly / Quarterly view  
 • Exchange rates are approximate — update `RATES_TO_USD` for production accuracy  
 """)
